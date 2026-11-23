@@ -19,7 +19,9 @@ import { registerExactEvmScheme } from "@x402/evm/exact/client";
 import { privateKeyToAccount } from "viem/accounts";
 
 const CATALOG_URL = process.env.X402_CATALOG_URL ?? "https://x402-catalog.kopachelli.workers.dev/v1/catalog";
-const NETWORK = process.env.X402_NETWORK ?? "eip155:84532";
+// Fleet is on Base MAINNET (real USDC). X402_NETWORK=eip155:84532 only works
+// against testnet deployments; setting a mainnet key here spends real money.
+const NETWORK = process.env.X402_NETWORK ?? "eip155:8453";
 const PK = process.env.X402_PRIVATE_KEY;
 
 let payer = null;
