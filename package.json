@@ -1,0 +1,11 @@
+{
+  "name": "x402-mcp",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "@x402/core": "^2.32.0",
+    "@x402/evm": "^2.32.0",
+    "viem": "^2.48.11"
+  }
+}
