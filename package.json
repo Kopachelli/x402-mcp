@@ -1,11 +1,34 @@
 {
-  "name": "x402-mcp",
-  "private": true,
+  "name": "@kopachelli/x402-mcp",
+  "version": "0.1.1",
+  "mcpName": "io.github.Kopachelli/x402-fleet",
+  "description": "MCP server exposing the Kopachelli x402 paid-API fleet: 160+ pay-per-call data endpoints (weather, finance, crypto, news, geo, satellite, economics, AI) payable in USDC on Base/Polygon/Arbitrum/World Chain.",
   "type": "module",
+  "bin": {
+    "x402-mcp": "index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kopachelli/x402-mcp"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.0",
     "@x402/core": "^2.32.0",
     "@x402/evm": "^2.32.0",
     "viem": "^2.48.11"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

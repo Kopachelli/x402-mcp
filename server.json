@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Kopachelli/x402-fleet",
+  "title": "Kopachelli x402 API Fleet",
+  "description": "Paid data APIs (weather, finance, geo, AI) via USDC x402 micropayments.",
+  "version": "0.1.1",
+  "websiteUrl": "https://github.com/Kopachelli/x402-mcp",
+  "repository": {
+    "url": "https://github.com/Kopachelli/x402-mcp",
+    "source": "github"
+  },
+  "remotes": [],
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@kopachelli/x402-mcp",
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "npx",
+      "environmentVariables": [
+        {
+          "description": "x402 private key (0x...) used to pay for API calls in USDC. If unset, the server runs in discovery mode and only lists endpoints/prices.",
+          "isSecret": true,
+          "isRequired": false,
+          "format": "string",
+          "name": "X402_PRIVATE_KEY",
+          "default": ""
+        },
+        {
+          "description": "CAIP-2 network to pay on. One of eip155:8453 (Base), eip155:137 (Polygon), eip155:42161 (Arbitrum), eip155:480 (World Chain).",
+          "isSecret": false,
+          "isRequired": false,
+          "format": "string",
+          "name": "X402_NETWORK",
+          "default": "eip155:8453"
+        }
+      ]
+    }
+  ]
+}
