@@ -17,6 +17,11 @@ import { z } from "zod";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import { registerExactEvmScheme } from "@x402/evm/exact/client";
 import { privateKeyToAccount } from "viem/accounts";
+import { createLedger, SqliteStore, stableStringify } from "effect-ledger";
+import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 const CATALOG_URL = process.env.X402_CATALOG_URL ?? "https://x402-catalog.kopachelli.workers.dev/v1/catalog";
 // Fleet is on Base MAINNET (real USDC). X402_NETWORK=eip155:84532 only works
@@ -45,37 +50,46 @@ async function getCatalog() {
 }
 
 // --- paid fetch ---
+// Errors are tagged with `paymentAttempted` so the ledger can tell a
+// pre-payment failure (safe to retry) from a post-payment one (maybe paid).
 async function paidFetch(url, { method = "GET", headers = {}, body } = {}) {
   const init = { method, headers: { ...headers }, ...(body !== undefined ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}) };
   if (body !== undefined && !init.headers["content-type"]) init.headers["content-type"] = "application/json";
 
-  let res = await fetch(url, init);
-  if (res.status === 402) {
-    const prHeader = res.headers.get("payment-required") ?? res.headers.get("PAYMENT-REQUIRED");
-    const paymentRequired = httpClient
-      ? httpClient.getPaymentRequiredResponse((h) => res.headers.get(h) ?? res.headers.get(h.toLowerCase()), undefined)
-      : prHeader ? JSON.parse(atob(prHeader)) : null;
+  let paymentAttempted = false;
+  try {
+    let res = await fetch(url, init);
+    if (res.status === 402) {
+      const prHeader = res.headers.get("payment-required") ?? res.headers.get("PAYMENT-REQUIRED");
+      const paymentRequired = httpClient
+        ? httpClient.getPaymentRequiredResponse((h) => res.headers.get(h) ?? res.headers.get(h.toLowerCase()), undefined)
+        : prHeader ? JSON.parse(atob(prHeader)) : null;
 
-    if (!httpClient || !paymentRequired) {
+      if (!httpClient || !paymentRequired) {
+        const text = await res.text();
+        return {
+          status: 402,
+          payment_required: paymentRequired,
+          hint: "No X402_PRIVATE_KEY configured — pay this endpoint per x402 protocol, then retry.",
+          raw: text.slice(0, 2000),
+        };
+      }
+
+      const payload = await httpClient.createPaymentPayload(paymentRequired);
+      const sigHeaders = httpClient.encodePaymentSignatureHeader(payload);
+      const retryInit = { ...init, headers: { ...init.headers, ...sigHeaders } };
+      paymentAttempted = true;
+      res = await fetch(url, retryInit);
+      const settle = res.headers.get("payment-response") ?? res.headers.get("PAYMENT-RESPONSE");
       const text = await res.text();
-      return {
-        status: 402,
-        payment_required: paymentRequired,
-        hint: "No X402_PRIVATE_KEY configured — pay this endpoint per x402 protocol, then retry.",
-        raw: text.slice(0, 2000),
-      };
+      return { status: res.status, body: safeJson(text), payment_response: settle ? JSON.parse(atob(settle)) : null };
     }
-
-    const payload = await httpClient.createPaymentPayload(paymentRequired);
-    const sigHeaders = httpClient.encodePaymentSignatureHeader(payload);
-    const retryInit = { ...init, headers: { ...init.headers, ...sigHeaders } };
-    res = await fetch(url, retryInit);
-    const settle = res.headers.get("payment-response") ?? res.headers.get("PAYMENT-RESPONSE");
     const text = await res.text();
-    return { status: res.status, body: safeJson(text), payment_response: settle ? JSON.parse(atob(settle)) : null };
+    return { status: res.status, body: safeJson(text) };
+  } catch (e) {
+    if (e && typeof e === "object") e.paymentAttempted = paymentAttempted;
+    throw e;
   }
-  const text = await res.text();
-  return { status: res.status, body: safeJson(text) };
 }
 
 function safeJson(t) {
@@ -93,8 +107,48 @@ function buildUrl(base, path, query) {
   return u.toString();
 }
 
+// --- effect ledger ---------------------------------------------------
+// Every paidFetch is an external action that can spend real USDC. The
+// ledger guarantees: a completed call replays its recorded result instead
+// of paying again, concurrent duplicate calls collapse to one, and a lost
+// response is reported as "unknown" rather than silently retried.
+const LEDGER_PATH = process.env.X402_LEDGER_PATH ?? join(homedir(), ".x402-mcp", "ledger.db");
+mkdirSync(dirname(LEDGER_PATH), { recursive: true });
+const ledger = createLedger({ store: new SqliteStore(LEDGER_PATH), leaseMs: 120_000 });
+
+const ledgerAdapter = {
+  async run(ctx, { url, method, query, body }) {
+    try {
+      const out = await paidFetch(url, { method, ...(body != null ? { body } : {}) });
+      if (out.status === 402 && out.hint) {
+        // No payment was made — definitively safe to retry later.
+        const e = new Error("payment required but X402_PRIVATE_KEY not configured");
+        e.definitive = true;
+        throw e;
+      }
+      return out;
+    } catch (e) {
+      if (e && e.paymentAttempted === false) {
+        // Failed before the signed request was sent — nothing was paid.
+        const err = new Error(`request failed before payment: ${e?.message ?? e}`);
+        err.definitive = true;
+        throw err;
+      }
+      throw e;
+    }
+  },
+  // These endpoints expose no status lookup; unknown outcomes stay unknown.
+};
+
+function defaultOperationId(toolName, query, body) {
+  return createHash("sha256")
+    .update(toolName + "\n" + stableStringify({ query: query ?? null, body: body ?? null }))
+    .digest("hex")
+    .slice(0, 32);
+}
+
 // --- server ---
-const server = new McpServer({ name: "x402-fleet", version: "0.1.0" });
+const server = new McpServer({ name: "x402-fleet", version: "0.2.0" });
 
 server.registerTool(
   "x402_catalog",
@@ -122,17 +176,47 @@ async function registerProductTools() {
               .describe("Query parameters, e.g. {base:'USD', quote:'EUR'}"),
             body: z.record(z.string(), z.any()).optional()
               .describe("JSON body for POST/PUT/PATCH/DELETE"),
+            operationId: z.string().optional()
+              .describe("Durable operation id for this intent. Supply a stable id (e.g. your job/run id) to dedupe retries; omit to derive one from the arguments."),
+            restart: z.boolean().optional()
+              .describe("Explicitly re-run a previously failed/unknown operation. Never set for unknown outcomes unless you know the paid call did not complete."),
           },
         },
-        async ({ query, body }) => {
+        async ({ query, body, operationId, restart }) => {
           const method = ep.method;
           const hasBody = body !== undefined && ["POST", "PUT", "PATCH", "DELETE"].includes(method);
           const url = buildUrl(p.url, ep.path, query);
+          const toolName = `x402_${p.name}_${method.toLowerCase()}_${ep.path.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`.slice(0, 64);
+          const scope = payer?.address ?? "x402-fleet";
+          const opId = operationId ?? defaultOperationId(toolName, query, body);
           try {
-            const out = await paidFetch(url, { method, ...(hasBody ? { body } : {}) });
-            return { content: [{ type: "text", text: JSON.stringify({ product: p.name, endpoint: `${method} ${ep.path}`, ...out }, null, 2) }] };
+            const outcome = await ledger.execute({
+              scope,
+              operationId: opId,
+              input: { tool: toolName, url, method, query: query ?? null, body: body ?? null },
+              adapter: ledgerAdapter,
+              restart,
+            });
+            const ledgerMeta = { operationId: opId, ledger_status: outcome.status, replayed: outcome.replayed };
+            if (outcome.status === "succeeded") {
+              const out = outcome.result;
+              return { content: [{ type: "text", text: JSON.stringify({ product: p.name, endpoint: `${method} ${ep.path}`, ...out, ledger: ledgerMeta }, null, 2) }] };
+            }
+            if (outcome.status === "failed") {
+              return { content: [{ type: "text", text: JSON.stringify({ product: p.name, endpoint: `${method} ${ep.path}`, ledger: ledgerMeta, error: outcome.error?.message ?? "operation failed" }) }], isError: true };
+            }
+            // unknown / in-progress: do NOT blindly retry — the paid call
+            // may have completed. Report and let the caller decide.
+            return { content: [{ type: "text", text: JSON.stringify({
+              product: p.name,
+              endpoint: `${method} ${ep.path}`,
+              ledger: ledgerMeta,
+              error: outcome.status === "unknown"
+                ? "Outcome unknown: the paid request may have completed but its response was lost. Do not retry automatically — verify with the provider or retry with restart:true only if you are certain no payment settled."
+                : "Another attempt for this operation is already in progress.",
+            }) }], isError: true };
           } catch (e) {
-            return { content: [{ type: "text", text: JSON.stringify({ product: p.name, endpoint: `${method} ${ep.path}`, error: String(e?.message ?? e) }) }], isError: true };
+            return { content: [{ type: "text", text: JSON.stringify({ product: p.name, endpoint: `${method} ${ep.path}`, operationId: opId, error: String(e?.message ?? e) }) }], isError: true };
           }
         }
       );
