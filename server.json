@@ -3,7 +3,7 @@
   "name": "io.github.Kopachelli/x402-fleet",
   "title": "Kopachelli x402 API Fleet",
   "description": "Paid data APIs (weather, finance, geo, AI) via USDC x402 micropayments.",
-  "version": "0.1.1",
+  "version": "0.2.1",
   "websiteUrl": "https://github.com/Kopachelli/x402-mcp",
   "repository": {
     "url": "https://github.com/Kopachelli/x402-mcp",
@@ -14,7 +14,7 @@
     {
       "registryType": "npm",
       "identifier": "@kopachelli/x402-mcp",
-      "version": "0.1.1",
+      "version": "0.2.1",
       "transport": {
         "type": "stdio"
       },
