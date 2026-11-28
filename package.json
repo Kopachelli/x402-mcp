@@ -1,6 +1,6 @@
 {
   "name": "@kopachelli/x402-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "mcpName": "io.github.Kopachelli/x402-fleet",
   "description": "MCP server exposing the Kopachelli x402 paid-API fleet: 160+ pay-per-call data endpoints (weather, finance, crypto, news, geo, satellite, economics, AI) payable in USDC on Base/Polygon/Arbitrum/World Chain.",
   "type": "module",
