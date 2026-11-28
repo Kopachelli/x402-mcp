@@ -64,3 +64,20 @@ Pre-payment failures (network down, 402 with no key) are recorded as `failed` �
 safe to retry. Failures after the signed request was sent are `unknown`.
 
 Requires Node >= 22.13 (`node:sqlite`).
+
+## Built with
+
+This server and the fleet it fronts are built on Kopachelli's open-source
+reliability packages:
+
+- [effect-ledger](https://www.npmjs.com/package/effect-ledger) — exactly-once
+  semantics for paid operations (replay, dedupe, unknown-outcome tracking)
+- [x402-receipt](https://www.npmjs.com/package/x402-receipt) — x402 payment
+  artifact verification
+- [one-flight](https://www.npmjs.com/package/one-flight) — in-flight request
+  deduplication
+- [httpsig-js](https://www.npmjs.com/package/httpsig-js) — RFC 9421 HTTP Message
+  Signatures
+- [verifiable-log](https://www.npmjs.com/package/verifiable-log) — hash-chained
+  audit trails
+- [time-budget](https://www.npmjs.com/package/time-budget) — deadline propagation
