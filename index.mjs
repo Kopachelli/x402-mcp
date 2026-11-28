@@ -12,6 +12,7 @@
 //     TESTNET ONLY (eip155:84532) unless NETWORK is deliberately changed.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
@@ -157,9 +158,77 @@ const FLEET_INSTRUCTIONS =
   "If X402_PRIVATE_KEY is unset, calls return payment_required details for out-of-band payment.";
 
 const server = new McpServer(
-  { name: "x402-fleet", version: "0.2.0" },
-  { instructions: FLEET_INSTRUCTIONS }
+  { name: "x402-fleet", version: "0.3.0" },
+  {
+    instructions: FLEET_INSTRUCTIONS,
+    capabilities: {
+      resources: {},
+      extensions: { "io.modelcontextprotocol/skills": {} },
+    },
+  }
 );
+
+// --- Skills over MCP (SEP-2640 / io.modelcontextprotocol/skills) ---
+// Serve the fleet SKILL.md as a skill:// resource so hosts that support the
+// extension can discover and load full agent guidance through the MCP session.
+const SKILL_URL = "https://raw.githubusercontent.com/Kopachelli/x402-fleet-skill/master/SKILL.md";
+const SKILL_URI = "skill://x402-fleet/SKILL.md";
+const SKILL_FALLBACK = `---
+name: x402-fleet
+description: Kopachelli x402 paid-API fleet — 480+ pay-per-call API products settled in USDC via x402.
+---
+
+# x402 Fleet
+
+Catalog: https://x402-catalog.kopachelli.workers.dev/v1/catalog
+Full skill: https://github.com/Kopachelli/x402-fleet-skill
+`;
+let skillEntry = null;
+{
+  let md = null;
+  try {
+    const r = await fetch(SKILL_URL);
+    if (r.ok) md = await r.text();
+  } catch { /* fall through to embedded copy */ }
+  if (!md) md = SKILL_FALLBACK;
+  const fmMatch = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const fm = {};
+  if (fmMatch) {
+    for (const line of fmMatch[1].split(/\r?\n/)) {
+      const i = line.indexOf(":");
+      if (i > 0) fm[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    }
+  }
+  const digest = "sha256:" + createHash("sha256").update(md, "utf8").digest("hex");
+  const size = Buffer.byteLength(md, "utf8");
+  skillEntry = {
+    uri: SKILL_URI,
+    frontmatter: {
+      name: fm.name ?? "x402-fleet",
+      description: fm.description ?? "Kopachelli x402 paid-API fleet",
+    },
+    resources: [{ uri: SKILL_URI, digest, size }],
+  };
+  server.registerResource(
+    "x402-fleet",
+    SKILL_URI,
+    { mimeType: "text/markdown", description: "Agent skill for the Kopachelli x402 paid-API fleet" },
+    async () => ({ contents: [{ uri: SKILL_URI, mimeType: "text/markdown", text: md }] })
+  );
+  server.server.setRequestHandler(
+    z.object({ method: z.literal("skills/list"), params: z.object({}).passthrough().optional() }),
+    async () => ({ resultType: "complete", skills: [skillEntry], ttlMs: 300000, cacheScope: "public" })
+  );
+  server.server.setRequestHandler(
+    z.object({ method: z.literal("skills/get"), params: z.object({ uri: z.string() }).passthrough() }),
+    async (req) => {
+      if (req.params.uri !== SKILL_URI) {
+        throw new McpError(ErrorCode.InvalidParams, `unknown skill uri: ${req.params.uri}`);
+      }
+      return { resultType: "complete", skill: skillEntry, ttlMs: 300000, cacheScope: "public" };
+    }
+  );
+}
 
 server.registerTool(
   "x402_catalog",
@@ -175,9 +244,15 @@ server.registerTool(
 
 async function registerProductTools() {
   const products = await getCatalog().catch(() => []);
+  const usedNames = new Set();
   for (const p of products) {
     for (const ep of p.endpoints ?? []) {
-      const toolName = `x402_${p.name}_${ep.method.toLowerCase()}_${ep.path.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`.slice(0, 64);
+      const baseName = `x402_${p.name}_${ep.method.toLowerCase()}_${ep.path.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
+      let toolName = baseName.slice(0, 64);
+      if (usedNames.has(toolName)) {
+        toolName = `${baseName.slice(0, 57)}_${createHash("sha1").update(baseName).digest("hex").slice(0, 6)}`;
+      }
+      usedNames.add(toolName);
       server.registerTool(
         toolName,
         {
@@ -197,7 +272,6 @@ async function registerProductTools() {
           const method = ep.method;
           const hasBody = body !== undefined && ["POST", "PUT", "PATCH", "DELETE"].includes(method);
           const url = buildUrl(p.url, ep.path, query);
-          const toolName = `x402_${p.name}_${method.toLowerCase()}_${ep.path.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`.slice(0, 64);
           const scope = payer?.address ?? "x402-fleet";
           const opId = operationId ?? defaultOperationId(toolName, query, body);
           try {
